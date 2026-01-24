@@ -1,6 +1,9 @@
 
 class SearchBook:
 
+    def __init__(self):
+        self.all_recipes = ['sport_recipes.txt', 'UserCookbook.txt']
+
     def keys_word(self):
         user_key = input('Enter the word for search: ').strip().lower()
 
@@ -8,25 +11,27 @@ class SearchBook:
         recipe_text = None
         found = False
 
-        with open('sport_recipes.txt', 'r', encoding='utf-8') as f:
-            for line in f:
-                line_low = line.lower().strip()
+        for recipe in self.all_recipes:
 
-                if line_low.startswith('рецепт'):
-                    recipe_name = line.strip()
+            with open(recipe, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line_low = line.lower().strip()
 
-                elif line_low.startswith('готовка'):
-                    recipe_text = line.strip()
+                    if line_low.startswith('рецепт'):
+                        recipe_name = line.strip()
 
-                   
-                    if recipe_name and user_key in recipe_name.lower():
-                        print('\nНайден рецепт:')
-                        print(recipe_name)
-                        print(recipe_text)
-                        found = True
+                    elif line_low.startswith('готовка'):
+                        recipe_text = line.strip()
 
-        if not found:
-            print('Не найдено')
+                    
+                        if recipe_name and user_key in recipe_name.lower():
+                            print(f'\nНайден рецепт в {recipe}:  ')
+                            print(recipe_name)
+                            print(recipe_text)
+                            found = True
+
+                if not found:
+                    print(f'Не найдено в {recipe}')
   
 
     def search_meal(self):
@@ -34,56 +39,72 @@ class SearchBook:
         recipes_count = 5
         count = 0
         read_recipes = False
+        found = False
 
-        user_meal = input('Enter breakfast, lunch, dinner or drink:  ').strip().upper()
+        user_meal = input('Enter breakfast, lunch, dinner or drink: ').strip().upper()
+        print()
 
-        with open('sport_recipes.txt', 'r', encoding='utf-8') as f:
-            for line in f:
-                line_up = line.strip().upper()
+        for recipe in self.all_recipes:
 
-                if line_up == user_meal:
-                    read_recipes = True
-                    continue
+            with open('sport_recipes.txt', 'r', encoding='utf-8') as f:
 
-                if read_recipes:
-                    if 'готовка' in line.lower():
-                        print(line.strip())
-                        print()
-                    if  'рецепт' in line.lower():
-                        print(line.strip())    
-                        count += 1
+                for line in f:
+                    line_up = line.strip().upper()
 
-                    if count == recipes_count:
-                        count = 0
-                        return    
-            print('Не найдено')
+                    if line_up == user_meal:
+                        read_recipes = True
+                        continue
+
+                    if read_recipes:
+                        if 'рецепт' in line.lower():
+                            print(line.strip())
+                            count += 1
+                            found = True
+
+                        if 'готовка' in line.lower():
+                            print(line.strip())
+                            print()
+
+                        if count == recipes_count:
+                            break
+
+            if not found:
+                print(f'Не найдено в {recipe}')
+
 
     def search_by_cal(self):
 
-        user_cal = int(input('Enter the desired number of calories per 100 grams:  ').strip())
-        
+        user_cal = int(input('Enter the desired number of calories per 100 grams: ').strip())
+        print()
+
+        recipe_name = None
+        recipe_text = None
+        found = False
 
         with open('sport_recipes.txt', 'r', encoding='utf-8') as f:
+
             for line in f:
-                line_low = line.lower()
+                line_low = line.lower().strip()
 
                 if line_low.startswith('рецепт'):
                     recipe_name = line.strip()
-                elif line_low.startswith('готовка'):
-                    recipe_text = line.strip() 
 
-                if 'рецепт' in line_low:
                     parts = line_low.split()
-
                     for word in parts:
                         if word.isdigit():
                             calories = int(word)
-
                             if calories <= user_cal:
-                                print(recipe_name)
-                                print(recipe_text)
-                
-            print('Не найдено')        
+                                found = True
+
+                elif line_low.startswith('готовка') and found:
+                    recipe_text = line.strip()
+                    print(recipe_name)
+                    print(recipe_text)
+                    print()
+
+        if not found:
+            print('Не найдено')
+      
 
 
 class UserBook:
