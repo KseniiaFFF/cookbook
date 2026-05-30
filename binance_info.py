@@ -2,11 +2,47 @@ import requests
 import time
 import threading
 import logging
+import os
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from trade_mode import execute_signal
-from config import MIN_SCORE, IMPULSE_CANDLES, WATCH_COMPRESSION_MAX, READY_COMPRESSION_MAX, READY_PULLBACK_MAX, COMPRESSION_CANDLES, BASE_URL, INTERVAL, LIMIT, MIN_VOLUME, MAX_PAIRS, CACHE_LIFETIME, KLINES_CACHE_TTL, SIGNAL_COOLDOWN, FILE_PATH
+from dotenv import load_dotenv
+from config import (
+    MIN_SCORE,
+    IMPULSE_CANDLES,
+    WATCH_COMPRESSION_MAX,
+    READY_COMPRESSION_MAX,
+    WATCH_PULLBACK_MAX,
+    READY_PULLBACK_MAX,
+    COMPRESSION_CANDLES,
+    BASE_URL,
+    INTERVAL,
+    LIMIT,
+    MIN_VOLUME,
+    MAX_PAIRS,
+    CACHE_LIFETIME,
+    KLINES_CACHE_TTL,
+    SIGNAL_COOLDOWN,
+    FILE_PATH
+)
+
+
+load_dotenv()
+
+ACCOUNTS = [
+    {
+        "name": "Kseniia",
+        "api_key": os.getenv("API_KEY_1"),
+        "secret_key": os.getenv("SECRET_KEY_1")
+    }
+    # {
+    #     "name": "Maxim",
+    #     "api_key": os.getenv("API_KEY_2"),
+    #     "secret_key": os.getenv("SECRET_KEY_2")
+    # }
+]
+
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +136,7 @@ def get_klines(symbol):
         r = requests.get(url, params=params, timeout=8)
 
         if r.status_code != 200:
+            logger.warning(f"Klines error {symbol}: {r.text}")
             return None
 
         data = r.json()
@@ -145,7 +182,11 @@ def check_pair(symbol):
     try:
         klines = get_klines(symbol)
 
-        if not klines or len(klines) < (IMPULSE_CANDLES + COMPRESSION_CANDLES + 10):
+        if klines is None:
+            logger.warning(f"{symbol}: klines is None")
+            return None
+
+        if len(klines) < (IMPULSE_CANDLES + COMPRESSION_CANDLES + 10):
             logger.info(f"Symbol: {symbol},  impulse: {len(klines)}")
             return None
         
@@ -181,12 +222,13 @@ def check_pair(symbol):
         threshold = dynamic_threshold(atr_pct)
 
         if abs(impulse) < threshold:
+            # logger.info(f"Symbol: {symbol},  abs(impulse): {abs(impulse)}, threshold: {threshold}")
             return None
             
         
         impulse_strength = abs(impulse) / atr_pct
 
-        if impulse_strength < 1.1:
+        if impulse_strength < 2.0:
             logger.info(f"Symbol: {symbol},  impulse_strength: {impulse_strength}")
             return None
         
@@ -198,7 +240,8 @@ def check_pair(symbol):
             / recent_low
         ) * 100
 
-        compression_ratio = range_percent/ max(abs(impulse), 0.1)
+        # compression_ratio = range_percent/ max(abs(impulse), 0.1)
+        compression_ratio = range_percent / atr_pct
 
         current_price = closes[-1]
 
@@ -207,30 +250,57 @@ def check_pair(symbol):
             / impulse_close
         ) * 100
 
-        pullback_ratio = pullback / max(abs(impulse), 0.1)
+        # pullback_ratio = pullback / max(abs(impulse), 0.1)
+        pullback_ratio = pullback / atr_pct
 
         state = prev["state"]
 
-        if compression_ratio > WATCH_COMPRESSION_MAX:
+        # if compression_ratio > WATCH_COMPRESSION_MAX:
+        #     state = "NONE"
+
+        # elif compression_ratio < READY_COMPRESSION_MAX and pullback_ratio < READY_PULLBACK_MAX:
+        #     state = "READY"
+
+        # elif compression_ratio < WATCH_COMPRESSION_MAX:
+        #     state = "BUILDING"
+
+        # else:
+        #     state = "WATCH"
+        if (
+            compression_ratio > WATCH_COMPRESSION_MAX
+            or pullback_ratio > WATCH_PULLBACK_MAX
+        ):
             state = "NONE"
 
-        elif compression_ratio < READY_COMPRESSION_MAX and pullback_ratio < READY_PULLBACK_MAX:
+        elif (
+            compression_ratio < READY_COMPRESSION_MAX
+            and pullback_ratio < READY_PULLBACK_MAX
+        ):
             state = "READY"
 
-        elif compression_ratio < WATCH_COMPRESSION_MAX:
+        else:
             state = "BUILDING"
 
-        else:
-            state = "WATCH"
+        # breakout = (
+        #     abs(current_price - recent_high) / recent_high < 0.005
+        #     #0.002
+        # )
+        breakout_distance = (
+            abs(current_price - recent_high)
+            / recent_high
+        ) * 100
 
-        breakout = (
-            abs(current_price - recent_high) / recent_high < 0.002
-        )
+        breakout = breakout_distance < (atr_pct * 0.3)
 
+        # score = (
+        #     abs(impulse)
+        #     * (1/(1 + compression_ratio))
+        #     * max((1 - pullback_ratio),0)
+        # )
         score = (
-            abs(impulse)
-            * (1/(1 + compression_ratio))
-            * max((1 - pullback_ratio),0)
+            impulse_strength
+            * (1 / (1 + compression_ratio))
+            * (1 / (1 + pullback_ratio))
         )
         
         
@@ -283,7 +353,7 @@ def scan_market():
 
     results = []
 
-    max_workers = min(10, len(pairs)) if pairs else 1
+    max_workers = min(5, len(pairs)) if pairs else 1
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
             outputs = list(executor.map(check_pair, pairs))
@@ -346,7 +416,7 @@ def scanner_loop():
 
         # print("hour: ",hour)
 
-        if hour >= 21 or hour < 3:
+        if hour >= 22 or hour < 2:
             logger.info(f"It is night. Stop scan.")
             time.sleep(600)
             continue
@@ -370,9 +440,18 @@ def scanner_loop():
                 continue
 
             write_signal(signal)
-            execute_signal(signal)
+        
+            for account in ACCOUNTS:
+                try:
 
-        time.sleep(1800)
+                    execute_signal(signal, account["api_key"], account["secret_key"])
+                    print(f"Name: {account['name']}")
+
+                except Exception:
+                    logger.exception(f"Account {account["name"]} error")
+
+
+        time.sleep(300)
 
 
 def start_scanner():
