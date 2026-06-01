@@ -63,7 +63,10 @@ class Signal:
     compression: float
     pullback: float
     score: float
-    threshold: float | None = None
+    # threshold: float | None = None
+    sl_distance: float
+    # threshold=threshold
+    stop_loss: float
 
 
 def get_usdt_pairs():
@@ -232,8 +235,9 @@ def check_pair(symbol):
             logger.info(f"Symbol: {symbol},  impulse_strength: {impulse_strength}")
             return None
         
-        recent_high = max(highs[-COMPRESSION_CANDLES:])
-        recent_low =  min(lows[-COMPRESSION_CANDLES:])
+        recent_high = max(highs[-COMPRESSION_CANDLES:-1])
+        recent_low =  min(lows[-COMPRESSION_CANDLES:-1])
+        # print(f"Symbol: {symbol}; recent_high: {recent_high}, recent_low: {recent_low}")
 
         range_percent = (
             (recent_high - recent_low)
@@ -290,7 +294,7 @@ def check_pair(symbol):
             / recent_high
         ) * 100
 
-        breakout = breakout_distance < (atr_pct * 0.3)
+        breakout = breakout_distance < (atr_pct * 0.18)
 
         # score = (
         #     abs(impulse)
@@ -331,6 +335,12 @@ def check_pair(symbol):
             else "SHORT"
         )
 
+        stop_loss, sl_distance = calculate_sl_by_structure(entry_price=price,
+            highs=highs, lows=lows,
+            direction=direction,
+            atr=atr
+        )
+
         return Signal(
             symbol=symbol,
             direction=direction,
@@ -338,7 +348,9 @@ def check_pair(symbol):
             compression=round(compression_ratio, 2),
             pullback=round(pullback_ratio, 2),
             score=round(score, 2),
-            threshold=threshold
+            sl_distance=sl_distance,
+            # threshold=threshold
+            stop_loss=stop_loss
         )
             
     
@@ -400,7 +412,7 @@ def write_signal(signal: Signal):
         f"Compression: {signal.compression}% | "
         f"Pullback: {signal.pullback}% | "
         f"Score: {signal.score}% |"
-        f"Threshold: {signal.threshold}%\n "
+        f"SL: {signal.stop_loss}\n "
     )
 
     with open(FILE_PATH, "a", encoding="utf-8") as f:
@@ -488,5 +500,33 @@ def reset_scanner_cache():
     cached_pairs = []
     pairs_last_update = 0
     logger.info("Кэш сканера полностью сброшен")
+
+
+def calculate_sl_by_structure(entry_price, highs, lows, direction, atr, buffer_mult= 1.0):
+
+    recent_high = max(highs[-COMPRESSION_CANDLES:-1])
+    recent_low = min(lows[-COMPRESSION_CANDLES:-1])
+
+    buffer = atr * buffer_mult
+
+    sl_min_distance = atr * 1.0
+    sl_max_distance = atr * 3.0
+
+    if direction == "LONG":
+        sl = recent_low - buffer
+        sl_distance = entry_price - sl
+    else:
+        sl = recent_high + buffer
+        sl_distance = sl - entry_price
+
+    sl_distance = max(sl_min_distance, sl_distance)
+    sl_distance = min(sl_max_distance, sl_distance)
+
+    if direction == "LONG":
+        stop_loss = entry_price - sl_distance
+    else:
+        stop_loss = entry_price + sl_distance
+
+    return stop_loss, sl_distance
 
 

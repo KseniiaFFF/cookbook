@@ -1,4 +1,3 @@
-import os
 import time
 import hmac
 import hashlib
@@ -7,19 +6,13 @@ import logging
 
 
 from config import BASE_URL
-from dotenv import load_dotenv
 from functools import lru_cache
 from decimal import Decimal, ROUND_DOWN
 
-load_dotenv()
-
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("SECRET_KEY")
-
 logger = logging.getLogger(__name__)
 
-last_balance_time = 0
-cached_balance = 0
+balance_cache_time = {}
+balance_cache = {}
 
 
 def sign(secret_key: str, query: str):
@@ -137,6 +130,7 @@ def normalize_quantity(symbol: str, qty: float) -> str:
     normalized = normalized.quantize(step, rounding=ROUND_DOWN)
 
     return format(normalized, "f")
+
 
 def place_market_order(api_key, secret_key, symbol, side, quantity):
 
@@ -262,7 +256,7 @@ def get_mark_price(symbol):
 
 
 def set_leverage(api_key: str, secret_key: str, symbol: str, leverage: int):
-    leverage = max(1, min(10, int(leverage)))
+    leverage = max(1, min(5, int(leverage)))
 
     params = {
         "symbol": symbol,
@@ -282,20 +276,20 @@ def set_leverage(api_key: str, secret_key: str, symbol: str, leverage: int):
     return r.json()
 
 
-def calculate_sl_tp_from_deposit_risk(entry_price: float, direction: str, threshold_percent: float, deposit_usdt: float, risk_percent: float = 3, rr_ratio: float = 2.5):
+def calculate_sl_tp_from_deposit_risk(entry_price: float, direction: str, sl_distance: float, deposit_usdt: float, risk_percent: float = 3, rr_ratio: float = 2.5):
 
     if entry_price <= 0:
         raise ValueError("entry price must be > 0")
     
-    if threshold_percent <= 0:
-        raise ValueError("threshold_percent must be > 0")
+    if sl_distance <= 0:
+        raise ValueError("sl_distance must be > 0")
     
     if deposit_usdt <= 0:
         raise ValueError("deposit_usdt must be > 0")
     
     risk_usdt = deposit_usdt * (risk_percent / 100)
-    sl_pct = threshold_percent / 100
-    sl_distance = entry_price * sl_pct
+    # sl_pct = threshold_percent / 100
+    # sl_distance = entry_price * sl_pct
 
     qty = risk_usdt / sl_distance
 
@@ -324,13 +318,53 @@ def calculate_sl_tp_from_deposit_risk(entry_price: float, direction: str, thresh
     }
 
 
+# def get_futures_usdt_balance(api_key: str, secret_key: str) -> float:
+
+#     global last_balance_time, cached_balance
+
+#     now = time.time()
+#     if now - last_balance_time < 8:
+#         return cached_balance
+
+#     params = {
+#         "timestamp": int(time.time() * 1000),
+#         "recvWindow": 5000
+#     }
+
+#     query = "&".join([f"{k}={v}" for k, v in params.items()])
+
+#     signature = sign(secret_key, query)
+
+#     url = f"{BASE_URL}/fapi/v2/balance?{query}&signature={signature}"
+#     headers = {"X-MBX-APIKEY": api_key}
+
+#     r = requests.get(url, headers=headers, timeout=10)
+
+#     if r.status_code != 200:
+#         raise RuntimeError(f"Balance fetch error: {r.text}")
+    
+#     data = r.json()
+
+#     usdt_row = next((item for item in data if item.get("asset") == "USDT"), None)
+
+#     if not usdt_row:
+#         raise RuntimeError("USDT balance not found")
+    
+#     cached_balance = float(usdt_row["availableBalance"])
+
+#     last_balance_time = now
+    
+#     return cached_balance
+
 def get_futures_usdt_balance(api_key: str, secret_key: str) -> float:
 
-    global last_balance_time, cached_balance
-
     now = time.time()
-    if now - last_balance_time < 8:
-        return cached_balance
+
+    if (
+        api_key in balance_cache
+        and now - balance_cache_time.get(api_key, 0) < 8
+    ):
+        return balance_cache[api_key]
 
     params = {
         "timestamp": int(time.time() * 1000),
@@ -348,19 +382,24 @@ def get_futures_usdt_balance(api_key: str, secret_key: str) -> float:
 
     if r.status_code != 200:
         raise RuntimeError(f"Balance fetch error: {r.text}")
-    
+
     data = r.json()
 
-    usdt_row = next((item for item in data if item.get("asset") == "USDT"), None)
+    usdt_row = next(
+        (item for item in data if item.get("asset") == "USDT"),
+        None
+    )
 
     if not usdt_row:
         raise RuntimeError("USDT balance not found")
-    
-    cached_balance = float(usdt_row["availableBalance"])
 
-    last_balance_time = now
-    
-    return cached_balance
+    # balance = float(usdt_row["availableBalance"])
+    balance = float(usdt_row["balance"])
+
+    balance_cache[api_key] = balance
+    balance_cache_time[api_key] = now
+
+    return balance
 
 
 def get_open_position_amt(api_key: str, secret_key: str, symbol: str) -> float:
@@ -409,16 +448,16 @@ def get_open_position_amt(api_key: str, secret_key: str, symbol: str) -> float:
 #         logger.exception("Ошибка place_algo_order")
 #         return None
     
-def place_conditional_order(params: dict):
+def place_conditional_order(api_key, secret_key, params: dict):
 
     try:
 
         query = "&".join([f"{k}={v}" for k, v in params.items()])
-        signature = sign(API_SECRET, query)
+        signature = sign(secret_key, query)
 
         url = f"{BASE_URL}/fapi/v1/algoOrder?{query}&signature={signature}"
 
-        headers = {"X-MBX-APIKEY": API_KEY}
+        headers = {"X-MBX-APIKEY": api_key}
 
         r = requests.post(url, headers=headers, timeout=10)
 
@@ -435,7 +474,7 @@ def place_conditional_order(params: dict):
         return None
 
 
-def execute_signal(signal):
+def execute_signal(signal, api_key, secret_key):
 
     try:
         symbol = signal.symbol
@@ -443,11 +482,11 @@ def execute_signal(signal):
         side = "BUY" if signal.direction == "LONG" else "SELL"
         opposite_side = "SELL" if side == "BUY" else "BUY"
 
-        set_leverage(API_KEY, API_SECRET, symbol, 10)
+        set_leverage(api_key, secret_key, symbol, 5)
 
-        open_orders = get_open_orders(API_KEY, API_SECRET, symbol)
+        open_orders = get_open_orders(api_key, secret_key, symbol)
 
-        position_amt = get_open_position_amt(API_KEY,API_SECRET,symbol)
+        position_amt = get_open_position_amt(api_key,secret_key,symbol)
 
         if position_amt > 0:
             print(f"Symbol: {symbol}. Pos open.")
@@ -459,12 +498,12 @@ def execute_signal(signal):
 
 
         price = get_mark_price(symbol)
-        deposit_usdt = get_futures_usdt_balance(API_KEY, API_SECRET)
+        deposit_usdt = get_futures_usdt_balance(api_key, secret_key)
 
         sl_tp = calculate_sl_tp_from_deposit_risk(
             entry_price=price,
             direction=signal.direction,
-            threshold_percent=float(signal.threshold),
+            sl_distance=float(signal.sl_distance),
             deposit_usdt=deposit_usdt,
             risk_percent=3,
             rr_ratio=2.5
@@ -474,8 +513,8 @@ def execute_signal(signal):
         qty_str = normalize_quantity(symbol, qty)
 
         result = place_market_order(
-            api_key=API_KEY,
-            secret_key=API_SECRET,
+            api_key=api_key,
+            secret_key=secret_key,
             symbol=symbol,
             side=side,
             quantity=float(qty_str)
@@ -521,8 +560,8 @@ def execute_signal(signal):
             "symbol": symbol,
             "side": sl_side,
             "type": "STOP_MARKET",
-            "algoType": "CONDITIONAL",           # ← Обязательно!
-            "triggerPrice": str(round(sl_tp["stop_loss"], 6)),
+            "algoType": "CONDITIONAL",           
+            "triggerPrice": adjust_price_precision(symbol, sl_tp["stop_loss"]),
             "closePosition": "true",
             "workingType": "MARK_PRICE",
             "timestamp": int(time.time() * 1000)
@@ -532,15 +571,15 @@ def execute_signal(signal):
             "symbol": symbol,
             "side": sl_side,
             "type": "TAKE_PROFIT_MARKET",
-            "algoType": "CONDITIONAL",           # ← Обязательно!
-            "triggerPrice": str(round(sl_tp["take_profit"], 6)),
+            "algoType": "CONDITIONAL",           
+            "triggerPrice": adjust_price_precision(symbol, sl_tp["take_profit"]),
             "closePosition": "true",
             "workingType": "MARK_PRICE",
             "timestamp": int(time.time() * 1000)
         }
 
-        sl_result = place_conditional_order(sl_params)
-        tp_result = place_conditional_order(tp_params)
+        sl_result = place_conditional_order(api_key, secret_key, sl_params)
+        tp_result = place_conditional_order(api_key, secret_key, tp_params)
 
         print(f"SL: {sl_tp['stop_loss']:.4f} → {'✅' if sl_result else '❌'}")
         print(f"TP: {sl_tp['take_profit']:.4f} → {'✅' if tp_result else '❌'}")
